@@ -38,7 +38,12 @@ export function Dashboard() {
     if (!profile?.username) return;
 
     try {
-      const username = profile.username === 'TestUser' ? 'trojanmocx' : profile.username;
+      const username = profile.username;
+
+      if (username === 'TestUser' || !username) {
+        console.warn("No valid username to sync.");
+        return;
+      }
 
       // 1. Fetch Everything
       const [lcStats, leetcodeSolved, striverSheet] = await Promise.all([

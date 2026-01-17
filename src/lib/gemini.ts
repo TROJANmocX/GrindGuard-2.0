@@ -2,7 +2,10 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { StriverProblem } from './csvParser';
 
 // Initialize Gemini
-const genAI = new GoogleGenerativeAI('AIzaSyBfD-iaQ__O1635nZaSzUiya7ZyYpAriyM');
+// Initialize Gemini
+// Ensure you have VITE_GEMINI_API_KEY in your .env file
+const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
+const genAI = new GoogleGenerativeAI(API_KEY);
 
 export async function analyzeProfileWithGemini(
     username: string,
