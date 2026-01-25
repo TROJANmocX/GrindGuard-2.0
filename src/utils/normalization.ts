@@ -17,13 +17,23 @@ export const normalizeProblemName = (name: string): string => {
  */
 export const extractSlugFromUrl = (url: string): string => {
     try {
+        // Handle raw slug input just in case
+        if (!url.includes('/')) return url.toLowerCase();
+
         const parts = url.split('/problems/');
         if (parts.length > 1) {
-            // Remove trailing slash if present
-            return parts[1].replace(/\/$/, '');
+            let slug = parts[1];
+            
+            // Remove sub-routes like /description, /solution, /discuss
+            slug = slug.split('/')[0];
+            
+            // Remove query parameters
+            slug = slug.split('?')[0];
+
+            return slug.trim().toLowerCase();
         }
-        return url;
+        return url.toLowerCase();
     } catch (e) {
-        return url;
+        return url.toLowerCase();
     }
 };

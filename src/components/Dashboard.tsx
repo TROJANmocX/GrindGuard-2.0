@@ -1,20 +1,22 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Header } from './Header';
 import { StreakCard } from './StreakCard';
 import { DailyMission } from './DailyMission';
-import { ProgressBattlefield } from './ProgressBattlefield';
 import { ProblemList } from './ProblemList';
 import { Settings } from './Settings';
+import { Analytics } from './Analytics';
 import { fetchLeetCodeStats, fetchSolvedProblems, LeetCodeStats, SolvedProblem } from '../lib/leetcode';
-import { parseStriverSheet, StriverProblem } from '../lib/csvParser';
+import { parseStriverSheet } from '../lib/csvParser';
+import { loadLeetCodeMetadata, enrichProblems, EnrichedProblem } from '../lib/enrichment';
 import { calculateProgress } from '../lib/progress';
 import { getManualSolved, toggleManualSolved } from '../lib/storage';
 import { extractSlugFromUrl } from '../utils/normalization';
-import { calculateAttendance, AttendanceStats } from '../lib/attendance';
+import { calculateAttendance } from '../lib/attendance';
 import { checkAndSendPressure } from '../lib/notifications';
-import { getDailyMission, DailyMission as DailyMissionType } from '../lib/recommendation';
+import { getDailyMission } from '../lib/recommendation';
 import { Trophy, Target, Award } from 'lucide-react';
+import { AppError, ErrorType, createError, fetchWithRetry } from '../utils/errors';
 
 type View = 'dashboard' | 'focus' | 'progress' | 'analytics' | 'settings';
 
@@ -22,85 +24,146 @@ export function Dashboard() {
   const { profile } = useAuth();
   const [currentView, setCurrentView] = useState<View>('dashboard');
 
-  // Unified Data State
-  const [attendanceStats, setAttendanceStats] = useState<AttendanceStats | null>(null);
-  const [progressStats, setProgressStats] = useState<any | null>(null);
+  // Source Data State
+  const [striverProblems, setStriverProblems] = useState<EnrichedProblem[]>([]);
   const [autoSolvedList, setAutoSolvedList] = useState<SolvedProblem[]>([]);
   const [manualSolvedSlugs, setManualSolvedSlugs] = useState<string[]>([]);
-  const [dailyMission, setDailyMission] = useState<DailyMissionType | null>(null);
   const [profileStats, setProfileStats] = useState<LeetCodeStats | null>(null);
 
-  useEffect(() => {
-    loadData();
-  }, [profile]);
+  // Sync State
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [syncError, setSyncError] = useState<AppError | null>(null);
 
-  const loadData = async () => {
+  // 1. Derived: Merged Solved List
+  const allSolved = useMemo(() => {
+    const combined: SolvedProblem[] = [...autoSolvedList];
+    manualSolvedSlugs.forEach(slug => {
+      // Avoid duplicates if already in auto (though manual usually tracks what auto misses or local overrides)
+      // Our logic: manual is additive or override?
+      // Current logic: If manual slug not in auto, add it.
+      if (!combined.find(p => p.problemSlug === slug)) {
+        combined.push({
+          problemSlug: slug,
+          problemTitle: slug,
+          language: 'manual',
+          timestamp: new Date().toISOString()
+        });
+      }
+    });
+    return combined;
+  }, [autoSolvedList, manualSolvedSlugs]);
+
+  // 2. Derived: Stats & Mission
+  const allSolvedSlugs = useMemo(() => allSolved.map(p => p.problemSlug), [allSolved]);
+
+  // Calculated whenever allSolved or striverProblems changes
+  const progressStats = useMemo(() => {
+    if (striverProblems.length === 0) return null;
+    const { stats } = calculateProgress(striverProblems, allSolved);
+    return stats;
+  }, [striverProblems, allSolved]);
+
+  const attendanceStats = useMemo(() => {
+    // If we don't have profileStats, we can't fully calc streaks from calendar, 
+    // but we can try with just solved history if needed.
+    // calculateAttendance handles missing calendar gracefully-ish?
+    return calculateAttendance(allSolved, profileStats?.submissionCalendar);
+  }, [allSolved, profileStats]);
+
+  const dailyMission = useMemo(() => {
+    if (striverProblems.length === 0) return null;
+    return getDailyMission(striverProblems, allSolved);
+  }, [striverProblems, allSolved]);
+
+
+  const refreshData = useCallback(async () => {
     if (!profile?.username) return;
+    if (profile.username === 'TestUser') return;
+
+    setIsSyncing(true);
+    setSyncError(null); // Clear previous errors
 
     try {
       const username = profile.username;
 
-      if (username === 'TestUser' || !username) {
-        console.warn("No valid username to sync.");
-        return;
-      }
-
-      // 1. Fetch Everything
-      const [lcStats, leetcodeSolved, striverSheet] = await Promise.all([
-        fetchLeetCodeStats(username),
-        fetchSolvedProblems(username),
-        parseStriverSheet()
+      // 1. Fetch Everything with retry
+      const [lcStats, leetcodeSolved, striverSheet, metadata] = await Promise.all([
+        fetchWithRetry(() => fetchLeetCodeStats(username)),
+        fetchWithRetry(() => fetchSolvedProblems(username)),
+        parseStriverSheet(),
+        loadLeetCodeMetadata()
       ]);
+
+      const enrichedSheet = enrichProblems(striverSheet, metadata);
 
       const manualSolved = getManualSolved();
 
-      // 2. Merge Solved
-      const allSolved = [...leetcodeSolved];
-      manualSolved.forEach(slug => {
-        if (!allSolved.find(p => p.problemSlug === slug)) {
-          allSolved.push({ problemSlug: slug, problemTitle: slug, language: 'manual', timestamp: new Date().toISOString() });
-        }
-      });
-
-      // 3. Calculate Stats
-      const { stats } = calculateProgress(striverSheet, allSolved);
-      const attStats = calculateAttendance(allSolved, lcStats?.submissionCalendar);
-      const mission = getDailyMission(striverSheet, allSolved);
-
-      // 4. Set State
+      // 4. Set Source State (Derived states will auto-update)
+      setStriverProblems(enrichedSheet);
       setAutoSolvedList(leetcodeSolved);
       setManualSolvedSlugs(manualSolved);
-      setProgressStats(stats);
-      setAttendanceStats(attStats);
-      setDailyMission(mission);
       setProfileStats(lcStats);
 
-      // Pressure check
-      checkAndSendPressure(attStats.todayStatus);
+      setLastSyncedAt(new Date());
 
-    } catch (e) {
-      console.error("Dashboard Load Error:", e);
+    } catch (e: any) {
+      console.error("Dashboard Sync Error:", e);
+
+      // Create detailed error
+      const error = createError(
+        e.message?.includes('network') ? ErrorType.NETWORK_ERROR :
+          e.message?.includes('auth') ? ErrorType.AUTH_ERROR :
+            ErrorType.API_FAILURE,
+        e.message || "Sync failed",
+        "Check your LeetCode username and internet connection.",
+        true // retryable
+      );
+
+      setSyncError(error);
+      // IMPORTANT: We do NOT clear the data. Old data is better than no data.
+    } finally {
+      setIsSyncing(false);
     }
-  };
+  }, [profile]);
+
+  // Side Effect: Pressure Notification
+  useEffect(() => {
+    if (attendanceStats && !isSyncing) {
+      checkAndSendPressure(attendanceStats.todayStatus);
+    }
+  }, [attendanceStats, isSyncing]);
+
+  useEffect(() => {
+    refreshData();
+  }, [refreshData]);
 
   const handleManualToggle = (url: string) => {
     const slug = extractSlugFromUrl(url);
     const newManual = toggleManualSolved(slug);
     setManualSolvedSlugs(newManual);
-    // Optimistic: Add to mission state locally if part of mission?
-    // For now simple reload logic or local check toggles
+    // Derived state 'allSolved' -> 'dailyMission' will update automatically
   };
+
+
 
   if (!profile) return <div className="min-h-screen bg-black flex items-center justify-center text-gray-500">Loading...</div>;
 
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-gray-800">
-      <Header currentView={currentView} onNavigate={(view) => setCurrentView(view as View)} />
+      <Header
+        currentView={currentView}
+        onNavigate={(view) => setCurrentView(view as View)}
+        onSync={refreshData}
+        isSyncing={isSyncing}
+        lastSyncedAt={lastSyncedAt}
+        syncError={syncError}
+      />
 
-      <main className="max-w-4xl mx-auto px-6 py-12">
+      <main className="max-w-4xl mx-auto px-4 py-8 md:px-6 md:py-12">
         {/* VIEW 1: DASHBOARD */}
         {currentView === 'dashboard' && (
-          <div className="flex flex-col items-center justify-center space-y-12 animate-fade-in">
+          <div className="flex flex-col items-center justify-center space-y-8 md:space-y-12 animate-fade-in">
             <div className="text-center space-y-2">
               <h2 className="text-3xl font-light tracking-tight text-white">Welcome, {profile.username}.</h2>
               <p className="text-gray-500">Here is your status for today.</p>
@@ -146,7 +209,7 @@ export function Dashboard() {
             </div>
             <DailyMission
               mission={dailyMission}
-              solvedSlugs={[...autoSolvedList.map(p => p.problemSlug), ...manualSolvedSlugs]}
+              solvedSlugs={allSolvedSlugs}
               onToggle={handleManualToggle}
             />
           </div>
@@ -159,7 +222,13 @@ export function Dashboard() {
               <h2 className="text-2xl font-light text-white">Progress Tracker</h2>
               <p className="text-gray-500 mt-1">Striver's SDE Sheet</p>
             </div>
-            <ProblemList />
+            <ProblemList
+              problems={striverProblems}
+              solvedSlugs={allSolvedSlugs}
+              onToggle={handleManualToggle}
+              dailyMission={dailyMission}
+              progressStats={progressStats}
+            />
           </div>
         )}
 
@@ -170,19 +239,16 @@ export function Dashboard() {
               <h2 className="text-2xl font-light text-white">Focus Map</h2>
               <p className="text-gray-500 mt-1">Visualize your topic mastery.</p>
             </div>
-            <ProgressBattlefield stats={progressStats} />
+            <Analytics
+              profileStats={profileStats}
+              problems={striverProblems}
+              solvedSlugs={allSolvedSlugs}
+            />
           </div>
         )}
 
         {/* VIEW 5: SETTINGS */}
-        {currentView === 'settings' && (
-          <div className="max-w-xl mx-auto animate-fade-in">
-            <div className="mb-8 border-b border-gray-900 pb-4">
-              <h2 className="text-2xl font-light text-white">Settings</h2>
-            </div>
-            <Settings />
-          </div>
-        )}
+        {currentView === 'settings' && <Settings />}
       </main>
     </div>
   );

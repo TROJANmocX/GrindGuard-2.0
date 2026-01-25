@@ -126,10 +126,10 @@ export function TopicAnalytics() {
                 <div className="w-full bg-slate-800 rounded-full h-1.5">
                   <div
                     className={`h-1.5 rounded-full transition-all ${successRate >= 70
-                        ? 'bg-green-500'
-                        : successRate >= 40
-                          ? 'bg-yellow-500'
-                          : 'bg-red-500'
+                      ? 'bg-green-500'
+                      : successRate >= 40
+                        ? 'bg-yellow-500'
+                        : 'bg-red-500'
                       }`}
                     style={{ width: `${successRate}%` }}
                   />

@@ -9,7 +9,7 @@ export interface StriverProblem {
     SpaceComplexity: string;
 }
 
-export const parseStriverSheet = async (filePath: string = '/data/striver_sheet_new.csv'): Promise<StriverProblem[]> => {
+export const parseStriverSheet = async (filePath: string = '/data/striver_sheet_fixed.csv'): Promise<StriverProblem[]> => {
     return new Promise((resolve, reject) => {
         Papa.parse(filePath, {
             download: true,

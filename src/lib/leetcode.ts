@@ -114,7 +114,10 @@ export const fetchSolvedProblems = async (username: string): Promise<SolvedProbl
 
     // Deduplicate based on slug
     const uniqueSolved = Array.from(new Map(allSolved.map(item => [item.problemSlug, item])).values());
-    console.log(`Fetched ${uniqueSolved.length} unique solved problems.`);
+    console.log(`[DEBUG] Final Unique Solved Count: ${uniqueSolved.length}`);
+    if (uniqueSolved.length > 0) {
+      console.log('[DEBUG] Latest 3 solved:', uniqueSolved.slice(-3));
+    }
 
     return uniqueSolved;
 

@@ -7,7 +7,9 @@ import {
     setDeadline,
     sendRuthlessNotification
 } from '../lib/notifications';
+import { DataHealth } from './DataHealth';
 import { parseStriverSheet, StriverProblem } from '../lib/csvParser';
+import { loadLeetCodeMetadata, enrichProblems } from '../lib/enrichment';
 import { getManualSolved, toggleManualSolved } from '../lib/storage';
 import { extractSlugFromUrl } from '../utils/normalization';
 
@@ -30,10 +32,15 @@ export function Settings() {
             setEnabled(true);
         }
 
-        // Load Debug Data
+        // Load Debug Data & Health Check
         const loadDebug = async () => {
-            const sheet = await parseStriverSheet();
-            setStriverData(sheet.slice(0, 50)); // Increased to 50 for better manual control
+            const [sheet, metadata] = await Promise.all([
+                parseStriverSheet(),
+                loadLeetCodeMetadata()
+            ]);
+            const enriched = enrichProblems(sheet, metadata);
+            setStriverData(enriched);
+
             const manual = getManualSolved();
             setManualSolvedSlugs(manual);
         };
@@ -115,6 +122,11 @@ export function Settings() {
 
                     {status && <p className="text-sm text-green-500 font-mono mt-2">{status}</p>}
                 </div>
+            </div>
+
+            {/* Data Health Visualization (P3) */}
+            <div className="bg-slate-950 border border-slate-900 rounded-none p-6 mt-6">
+                <DataHealth problems={(striverData as any[])} />
             </div>
 
             {/* Data Management */}
